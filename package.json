@@ -1,0 +1,17 @@
+{
+  "name": "tft-crawler",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "crawl": "tsx src/main.ts",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.17.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "tsx": "^4.23.12",
+    "typescript": "^5"
+  }
+}
