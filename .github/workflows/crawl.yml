@@ -2,7 +2,7 @@ name: Crawl TFT
 on:
   workflow_dispatch:
   schedule:
-    - cron: '23 */2 * * *'
+    - cron: '23 * * * *'
 permissions:
   contents: read
 concurrency:
