@@ -11,7 +11,7 @@ concurrency:
 jobs:
   crawl:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
         with:
@@ -22,6 +22,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - run: npm test
       - run: npm run crawl
         env:
           RIOT_API_KEY: ${{ secrets.RIOT_API_KEY }}
@@ -29,4 +30,9 @@ jobs:
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
           CRAWL_PLATFORMS: vn2,kr,na1,euw1
           CRAWL_TIERS: challenger,grandmaster
-          CRAWL_LIMIT: '40'
+          CRAWL_LIMIT: '100'
+          CRAWL_BUDGET_MS: '180000'
+          CRAWL_MAX_REQUESTS: '150'
+          CRAWL_MAX_CANDIDATES: '300'
+          CRAWL_MAX_PLAYERS: '60'
+          CRAWL_DAILY_LIMIT: '3000'

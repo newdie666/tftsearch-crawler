@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "crawl": "tsx src/main.ts",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts"
   },
   "dependencies": {
     "@libsql/client": "^0.17.4"

@@ -5,6 +5,8 @@
 // chiếu lại https://developer.riotgames.com/docs/tft (mục "Routing Values")
 // vì Riot có thể điều chỉnh khi mở/gộp server.
 
+import { CrawlBudget, BudgetExceeded } from "../budget";
+
 export type Platform =
   | "na1" | "br1" | "la1" | "la2" | "oc1"
   | "kr" | "jp1"
@@ -62,8 +64,9 @@ class RateLimiter {
   private twoMinWindow: number[] = [];
   constructor(private opts: RateLimiterOptions) {}
 
-  async acquire(): Promise<void> {
+  async acquire(budget?: CrawlBudget): Promise<void> {
     for (;;) {
+      budget?.checkRequest();
       const now = Date.now();
       this.secondWindow = this.secondWindow.filter((t) => now - t < 1000);
       this.tenSecWindow = this.tenSecWindow.filter((t) => now - t < 10_000);
@@ -83,7 +86,8 @@ class RateLimiter {
       const waitFor1s = this.secondWindow.length >= this.opts.perSecond ? 1000 - (now - this.secondWindow[0]) : 0;
       const waitFor10s = this.tenSecWindow.length >= this.opts.per10Sec ? 10_000 - (now - this.tenSecWindow[0]) : 0;
       const waitFor2m = this.twoMinWindow.length >= this.opts.per2Min ? 120_000 - (now - this.twoMinWindow[0]) : 0;
-      await sleep(Math.max(waitFor1s, waitFor10s, waitFor2m, 50));
+      const delay = Math.max(waitFor1s, waitFor10s, waitFor2m, 50);
+      if (budget) await budget.sleep(delay); else await sleep(delay);
     }
   }
 }
@@ -103,6 +107,8 @@ export class RiotApiError extends Error {
   }
 }
 
+export function createLimiterPool() { return new Map<string, RateLimiter>(); }
+
 export class RiotClient {
   /**
    * MỘT bộ giới hạn cho MỖI HOST, không phải một bộ dùng chung.
@@ -118,9 +124,10 @@ export class RiotClient {
   private limiterOptions: RateLimiterOptions;
   private apiKey: string;
 
-  constructor(apiKey: string, opts?: Partial<RateLimiterOptions>) {
+  constructor(apiKey: string, opts?: Partial<RateLimiterOptions>, private readonly budget?: CrawlBudget, pool?: ReturnType<typeof createLimiterPool>) {
     if (!apiKey) throw new Error("Thiếu RIOT_API_KEY");
     this.apiKey = apiKey;
+    if (pool) this.limiters = pool;
     // Mặc định để dư an toàn dưới hạn mức 20/1s và 100/2min mà key khai báo trong header.
     this.limiterOptions = {
       perSecond: opts?.perSecond ?? 18,
@@ -149,25 +156,39 @@ export class RiotClient {
   }
 
   private async request<T>(url: string, retriesLeft = 5): Promise<T> {
-    await this.limiterFor(url).acquire();
-    const res = await fetch(url, { headers: { "X-Riot-Token": this.apiKey } });
+    await this.limiterFor(url).acquire(this.budget);
+    this.budget?.takeAttempt();
+    const timeout = Math.max(1, Math.min(15_000, this.budget?.remainingMs() ?? 15_000));
+    let res: Response;
+    try {
+      res = await fetch(url, { headers: { "X-Riot-Token": this.apiKey }, signal: AbortSignal.timeout(timeout) });
+    } catch {
+      if (this.budget && this.budget.remainingMs() === 0) throw new BudgetExceeded("time_budget");
+      throw new Error("Riot network request failed or timed out");
+    }
 
     if (res.status === 429) {
-      if (retriesLeft <= 0) throw new Error(`Rate limited liên tục, bỏ cuộc: ${url}`);
-      const retryAfter = Number(res.headers.get("retry-after")) || 2;
-      console.warn(`[riot] Rate limited; retrying in ${retryAfter}s`);
-      await sleep(retryAfter * 1000 + 250);
+      await res.body?.cancel();
+      if (this.budget) this.budget.rateLimited++;
+      if (retriesLeft <= 0) throw new Error("Riot retry limit reached (429)");
+      const header = res.headers.get("retry-after");
+      const seconds = header === null ? NaN : Number(header);
+      const retryMs = Number.isFinite(seconds) ? Math.max(0, seconds * 1000) : Math.max(0, Date.parse(header ?? "") - Date.now());
+      const delay = (Number.isFinite(retryMs) ? retryMs : 2000) + 250;
+      if (this.budget) await this.budget.sleep(delay); else await sleep(delay);
       return this.request<T>(url, retriesLeft - 1);
     }
 
     if (res.status >= 500) {
-      if (retriesLeft <= 0) throw new Error(`Lỗi server Riot liên tục: ${url}`);
-      await sleep(1500);
+      await res.body?.cancel();
+      if (this.budget) this.budget.serverErrors++;
+      if (retriesLeft <= 0) throw new Error("Riot retry limit reached (5xx)");
+      if (this.budget) await this.budget.sleep(1500); else await sleep(1500);
       return this.request<T>(url, retriesLeft - 1);
     }
 
     if (!res.ok) {
-      throw new RiotApiError(res.status, `Riot API ${res.status} ${res.statusText} — ${url}`);
+      throw new RiotApiError(res.status, `Riot API ${res.status}`);
     }
 
     return res.json() as Promise<T>;
